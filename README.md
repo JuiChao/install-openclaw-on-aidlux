@@ -1,4 +1,3 @@
-```markdown
 # OpenClaw on AidLux 自动化部署与环境修复脚本
 
 专为 AidLux (Android) 运行环境深度定制的 OpenClaw 一键安装与守护工具。
@@ -73,4 +72,3 @@ chmod +x install-openclaw.sh
 ## ⚠️ 注意事项
 * 脚本会自动覆盖现有的 `systemctl` 和 `loginctl`（如果存在），原文件会备份为 `.bak`。在 AidLux 环境中这两个命令通常不可用，因此覆盖通常是安全的。
 * 默认使用的服务端口为 `18789`，请确保该端口未被其他服务长期占用。
-```
