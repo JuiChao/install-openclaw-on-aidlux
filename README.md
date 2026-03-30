@@ -1,3 +1,10 @@
+这份安装脚本写得非常扎实，巧妙地解决了 AidLux/Android 环境下由于缺少 `systemd`、网络权限受限（Error 13）以及内存控制带来的种种痛点。可以看出你在部署和排错上投入了大量的精力，最终的方案非常优雅。
+
+以下为你编写的 GitHub README.md 文件草稿，排版清晰，重点突出了这个脚本解决的核心痛点，非常适合开源分享。
+
+***
+
+```markdown
 # OpenClaw on AidLux 自动化部署与环境修复脚本
 
 专为 AidLux (Android) 运行环境深度定制的 OpenClaw 一键安装与守护工具。
@@ -24,7 +31,7 @@
 
 ```bash
 # 1. 下载脚本
-curl -O [https://raw.githubusercontent.com/你的用户名/你的仓库名/main/install-openclaw.sh](https://raw.githubusercontent.com/你的用户名/你的仓库名/main/install-openclaw.sh)
+curl -O https://raw.githubusercontent.com/JuiChao/install-openclaw-on-aidlux/refs/heads/main/install-openclaw.sh
 
 # 2. 赋予执行权限
 chmod +x install-openclaw.sh
@@ -57,14 +64,21 @@ chmod +x install-openclaw.sh
 * **手动重启网关服务**：
     由于配置了 Watcher，你可以直接杀掉现有进程，Watcher 会在 10 秒内自动拉起：
     ```bash
-    pkill -f "openclaw gateway"
+    pkill -f "openclaw-gateway"
     ```
 * **停止所有服务**：
     ```bash
     pkill -f "openclaw-aidlux/watcher"
-    pkill -f "openclaw gateway"
+    pkill -f "openclaw-gateway"
+    ```
+* **检查服务进程**：
+    ```bash
+    ps aux | grep openclaw
     ```
 
 ## ⚠️ 注意事项
 * 脚本会自动覆盖现有的 `systemctl` 和 `loginctl`（如果存在），原文件会备份为 `.bak`。在 AidLux 环境中这两个命令通常不可用，因此覆盖通常是安全的。
 * 默认使用的服务端口为 `18789`，请确保该端口未被其他服务长期占用。
+```
+
+***
