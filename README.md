@@ -1,6 +1,7 @@
 # OpenClaw on AidLux 自动化部署与环境修复脚本
 
-专为 AidLux (Android) 运行环境深度定制的 OpenClaw 一键安装与守护工具。将家里的闲置安卓手机利用起来养龙虾吧。
+专为 AidLux (Android) 运行环境深度定制的 OpenClaw 一键安装与守护工具。
+将家里的闲置安卓 (Android) 手机利用起来养龙虾吧。
 
 由于 AidLux 基于 Android 底层，缺失标准的 `systemd` 组件，且存在严格的网络接口权限限制，常规的 Node.js/Linux 程序直接部署常常会遭遇各类报错（如常见的 `Error 13`）。本脚本通过**环境仿真**、**底层 API 动态补丁**以及**独立的进程守护逻辑**，完美实现了 OpenClaw 在 AidLux 上的稳定运行与开机自启。
 
