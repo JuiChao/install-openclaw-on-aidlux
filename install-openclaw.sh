@@ -76,15 +76,22 @@ export NODE_OPTIONS="$NODE_OPTIONS"
 export JITI_CACHE="$JITI_CACHE"
 export PATH=\$PATH:/usr/local/bin:/usr/bin:/opt/node/bin
 while true; do
-    # 日志文件超过 5MB 自动截断清空
+    # 1. 日志体积控制：超过 5MB 自动截断清空
     [ \$(stat -c%s "$LOG_FILE" 2>/dev/null || echo 0) -gt 5242880 ] && > "$LOG_FILE"
+    # 2. JITI 缓存管理：计算缓存目录大小(MB)，超过 100MB 时自动清理
+    CACHE_SIZE=\$(du -sm "\$JITI_CACHE" 2>/dev/null | awk '{print \$1}')
+    if [ -n "\$CACHE_SIZE" ] && [ "\$CACHE_SIZE" -gt 100 ]; then
+        echo "\$(date): JITI Cache size (\$CACHE_SIZE MB) exceeded limit, cleaning up..." >> "$LOG_FILE"
+        rm -rf "\$JITI_CACHE"/* 2>/dev/null || true
+    fi
     echo "\$(date): Starting Gateway..." >> "$LOG_FILE"
-    # 清理端口残留并拉起网关
+    # 3. 清理端口残留并拉起网关
     lsof -t -i tcp:18789 | xargs kill -9 2>/dev/null || true
     openclaw gateway --port 18789 >> "$LOG_FILE" 2>&1 &
     MAIN_PID=\$!
+    # 挂起并等待主进程退出
     wait \$MAIN_PID
-    # 退出时清理子进程组
+    # 4. 退出时清理子进程组（防止僵尸进程）
     pkill -P \$MAIN_PID 2>/dev/null || true
     sleep 10
 done
