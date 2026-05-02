@@ -7,7 +7,7 @@ if [ $(id -u) -eq 0 ]; then
   exit 1
 fi
 
-# 记录当前普通用户，供后续自启引导使用
+# 获取当前执行脚本的普通用户名
 CURRENT_USER=$(whoami)
 
 echo "[1/7] 补全系统级依赖 (Git & Node)..."
@@ -19,7 +19,7 @@ if ! command -v npm &> /dev/null; then
 fi
 
 echo "[2/7] 部署系统环境仿真 (systemctl & loginctl)..."
-# 部署 systemctl 仿真器
+# 部署 systemctl 仿真器 (用于骗过基础检查，但我们会在网关启动时绕过它)
 [ -f /usr/bin/systemctl ] && sudo mv /usr/bin/systemctl /usr/bin/systemctl.bak 2>/dev/null || true
 echo -e '#!/bin/bash\nexit 0' | sudo tee /usr/bin/systemctl > /dev/null
 sudo chmod 755 /usr/bin/systemctl
@@ -65,7 +65,7 @@ echo "export $JITI_ENV" >> ~/.bashrc
 export NODE_OPTIONS="$MEM_OPTS $PATCH_LOAD"
 export JITI_CACHE="$WORK_DIR/cache/jiti"
 
-# 提取 NPM 全局路径，防止自启时找不到环境变量
+# 提取 NPM 全局安装路径以防止自启时找不到环境变量
 NPM_BIN_PATH=$(npm config get prefix 2>/dev/null)/bin
 export PATH=$PATH:/usr/local/bin:/usr/bin:/opt/node/bin:$NPM_BIN_PATH
 
@@ -76,34 +76,42 @@ echo "[5/7] 正在安装 OpenClaw 核心程序..."
 sudo npm install -g openclaw@latest
 
 echo "[6/7] 构建本地监控守护脚本 (Watcher)..."
+# 获取绝对路径，彻底消灭 AidLux 启动时的环境变量黑洞
+NODE_BIN=$(which node)
+OPENCLAW_BIN=$(which openclaw || echo "$NPM_BIN_PATH/openclaw")
+
+# 修复因 sudo 遗留的隐性权限阻断问题
+sudo chown -R $CURRENT_USER:$CURRENT_USER ~/.openclaw 2>/dev/null || true
+
+# 生成最新版守护脚本
 cat << EOF > "$WATCHER_PATH"
 #!/bin/bash
-export NODE_OPTIONS="$NODE_OPTIONS"
-export JITI_CACHE="$JITI_CACHE"
+export NODE_OPTIONS="\$NODE_OPTIONS"
+export JITI_CACHE="$WORK_DIR/cache/jiti"
 export PATH=\$PATH:/usr/local/bin:/usr/bin:/opt/node/bin:$NPM_BIN_PATH
 
-# 修复核心 1：改为通过环境变量传递端口，绕过严格的 CLI 检查
+# 核心修复 1：通过环境变量传递端口，绕过 2026.4 严格的 CLI 参数校验
 export PORT=18789
 export OPENCLAW_PORT=18789
 
 while true; do
     # 日志文件超过 5MB 自动截断清空
     [ \$(stat -c%s "$LOG_FILE" 2>/dev/null || echo 0) -gt 5242880 ] && > "$LOG_FILE"
-    echo "\$(date): Starting Gateway..." >> "$LOG_FILE"
+    echo "\$(date): [Watcher] Booting Gateway in FOREGROUND..." >> "$LOG_FILE"
     
-    # 优雅清理端口：先尝试 kill -15 释放旧版锁文件，再 fallback 到 kill -9
+    # 核心修复 2：优雅清理端口，先用 -15 让应用释放资源，再 -9 强杀兜底
     lsof -t -i tcp:18789 | xargs kill -15 2>/dev/null || true
     sleep 2
     lsof -t -i tcp:18789 | xargs kill -9 2>/dev/null || true
     
-    # 清理由于非正常退出产生的 Ghost Lock 锁文件，防止新版拒绝启动
+    # 核心修复 3：清理幽灵锁文件 (Ghost Lock)，防止旧版非正常死亡导致新版拒载
     find ~/.openclaw/agents/*/sessions/ -name "*.lock" -exec rm -f {} \; 2>/dev/null || true
 
-    # 修复核心 2：增加缓冲时间，缓解 AidLux 设备的 event_loop_delay 崩溃
+    # 核心修复 4：缓冲 3 秒，缓解 AidLux 设备瞬间 CPU 峰值导致的 Event Loop Delay 崩溃
     sleep 3
 
-    # 修复核心 3：移除废弃的 --port 参数，并加上严格的 start 子命令
-    openclaw gateway start >> "$LOG_FILE" 2>&1 &
+    # 核心修复 5：使用绝对路径 + 去掉 start 参数，强制网关在前台运行，避免触发虚假 systemctl 导致闪退死循环
+    $NODE_BIN $OPENCLAW_BIN gateway >> "$LOG_FILE" 2>&1 &
     MAIN_PID=\$!
     wait \$MAIN_PID
     
@@ -114,27 +122,34 @@ done
 EOF
 chmod +x "$WATCHER_PATH"
 
-# 配置 Aidlux 系统自启引导（自动降权）
-# 修复核心 4：去除 EOF 单引号，使用 sudo tee 保证 $CURRENT_USER 变量能够正确被渲染成具体用户名
-cat << EOF | sudo tee /etc/aidlux/autostart_openclaw.sh > /dev/null
-#!/bin/bash
-sleep 20
-su - $CURRENT_USER -c "setsid $WATCHER_PATH >/dev/null 2>&1 &"
-EOF
-sudo chmod +x /etc/aidlux/autostart_openclaw.sh
-
-echo "[7/7] 启动服务与性能调优..."
+echo "[7/7] 配置系统自启并启动服务..."
 # 禁用移动端不稳定的 mDNS 发现
 openclaw config set gateway.mdns.enabled false 2>/dev/null || true
 
+# 配置 Aidlux 系统自启引导（自动降权）
+# 使用 tee + 去除 EOF 引号，确保 $CURRENT_USER 变量能够被正确渲染成具体用户名
+# 增加底层引导日志，便于未来排错
+cat << EOF | sudo tee /etc/aidlux/autostart_openclaw.sh > /dev/null
+#!/bin/bash
+exec > /tmp/aidlux_boot.log 2>&1
+echo "======================================"
+echo "[\$(date)] AidLux 触发自启引导..."
+sleep 20
+echo "[\$(date)] 延迟结束，拉起用户 $CURRENT_USER 的网关..."
+su - $CURRENT_USER -c "setsid $WATCHER_PATH >/dev/null 2>&1 &"
+echo "[\$(date)] 拉起命令已发送。"
+echo "======================================"
+EOF
+sudo chmod +x /etc/aidlux/autostart_openclaw.sh
+
 # 重置进程状态并开启当前守护
-pkill -f "openclaw-aidlux/watcher" 2>/dev/null || true
+pkill -f "watcher.sh" 2>/dev/null || true
 pkill -f "openclaw gateway" 2>/dev/null || true
 setsid "$WATCHER_PATH" >/dev/null 2>&1 &
 
 echo "------------------------------------------------"
-echo "部署完成！已适配 OpenClaw 2026.4 机制与 AidLux 启动流。"
-echo "网关已在后台静默运行。正在进入初始化..."
+echo "部署完成！已集成 2026.4 兼容补丁及 AidLux 底层防死锁机制。"
+echo "网关已在后台正常运行。正在进入初始化..."
 echo "------------------------------------------------"
 sleep 2
 openclaw onboard
