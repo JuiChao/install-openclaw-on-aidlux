@@ -7,6 +7,9 @@ if [ $(id -u) -eq 0 ]; then
   exit 1
 fi
 
+# 获取当前执行脚本的普通用户名
+CURRENT_USER=$(whoami)
+
 echo "[1/7] 补全系统级依赖 (Git & Node)..."
 sudo apt-get update -y
 sudo apt-get install -y git curl procps psmisc lsof
@@ -23,11 +26,11 @@ sudo chmod 755 /usr/bin/systemctl
 
 # 部署 loginctl 仿真器以骗过 onboarding 驻留检查
 [ -f /usr/bin/loginctl ] && sudo mv /usr/bin/loginctl /usr/bin/loginctl.bak 2>/dev/null || true
-sudo bash -c "cat << 'EOF' > /usr/bin/loginctl
+cat << 'EOF' | sudo tee /usr/bin/loginctl > /dev/null
 #!/bin/bash
-[[ \"\$*\" == *\"show-user\"* ]] && echo \"Linger=yes\"
+[[ "$*" == *"show-user"* ]] && echo "Linger=yes"
 exit 0
-EOF"
+EOF
 sudo chmod 755 /usr/bin/loginctl
 
 echo "[3/7] 环境补丁初始化与内存加固 (2GB)..."
@@ -61,7 +64,10 @@ echo "export $JITI_ENV" >> ~/.bashrc
 
 export NODE_OPTIONS="$MEM_OPTS $PATCH_LOAD"
 export JITI_CACHE="$WORK_DIR/cache/jiti"
-export PATH=$PATH:/usr/local/bin:/usr/bin:/opt/node/bin:$(npm config get prefix 2>/dev/null)/bin
+
+# 提取 NPM 全局安装路径以防止自启时找不到环境变量
+NPM_BIN_PATH=$(npm config get prefix 2>/dev/null)/bin
+export PATH=$PATH:/usr/local/bin:/usr/bin:/opt/node/bin:$NPM_BIN_PATH
 
 echo "[4/7] 配置插件编译隔离环境..."
 mkdir -p "$WORK_DIR/cache/jiti"
@@ -70,28 +76,27 @@ echo "[5/7] 正在安装 OpenClaw 核心程序..."
 sudo npm install -g openclaw@latest
 
 echo "[6/7] 构建本地监控守护脚本 (Watcher)..."
-# 注意：补全了 start 命令，并处理了 2026.4.29+ 的锁文件清理与优雅终止
+# 生成守护脚本：包含了 start 指令、优雅终止以及 Ghost Lock 清理机制
 cat << EOF > "$WATCHER_PATH"
 #!/bin/bash
 export NODE_OPTIONS="$NODE_OPTIONS"
 export JITI_CACHE="$JITI_CACHE"
-# 强绑定 npm 路径，防止 AidLux 开机自启时找不到 openclaw 命令
-export PATH=\$PATH:/usr/local/bin:/usr/bin:/opt/node/bin:$(npm config get prefix 2>/dev/null)/bin
+export PATH=\$PATH:/usr/local/bin:/usr/bin:/opt/node/bin:$NPM_BIN_PATH
 
 while true; do
     # 日志文件超过 5MB 自动截断清空
     [ \$(stat -c%s "$LOG_FILE" 2>/dev/null || echo 0) -gt 5242880 ] && > "$LOG_FILE"
     echo "\$(date): Starting Gateway..." >> "$LOG_FILE"
     
-    # 修复 1：优雅清理端口。先尝试 kill -15 让旧版释放锁文件，再 fallback 到 kill -9
+    # 优雅清理端口：先尝试 kill -15 释放锁文件，再 fallback 到 kill -9
     lsof -t -i tcp:18789 | xargs kill -15 2>/dev/null || true
     sleep 2
     lsof -t -i tcp:18789 | xargs kill -9 2>/dev/null || true
     
-    # 修复 2：清理由于崩溃或暴力结束造成的 Ghost Lock，否则新版会拒绝启动
+    # 清理幽灵锁文件 (Ghost Lock) 防止新版拒载
     find ~/.openclaw/agents/*/sessions/ -name "*.lock" -exec rm -f {} \; 2>/dev/null || true
 
-    # 修复 3：补全严格的 gateway start 子命令
+    # 补全严格的 gateway start 子命令
     openclaw gateway start --port 18789 >> "$LOG_FILE" 2>&1 &
     MAIN_PID=\$!
     wait \$MAIN_PID
@@ -104,11 +109,12 @@ EOF
 chmod +x "$WATCHER_PATH"
 
 # 配置 Aidlux 系统自启引导（自动降权）
-sudo bash -c "cat << 'EOF' > /etc/aidlux/autostart_openclaw.sh
+# 使用 tee 将自动降权指令准确写入系统目录，规避 EOF 引号导致的环境变量不展开问题
+cat << EOF | sudo tee /etc/aidlux/autostart_openclaw.sh > /dev/null
 #!/bin/bash
 sleep 20
-su - $USER -c \"setsid $WATCHER_PATH >/dev/null 2>&1 &\"
-EOF"
+su - $CURRENT_USER -c "setsid $WATCHER_PATH >/dev/null 2>&1 &"
+EOF
 sudo chmod +x /etc/aidlux/autostart_openclaw.sh
 
 echo "[7/7] 启动服务与性能调优..."
@@ -121,7 +127,7 @@ pkill -f "openclaw gateway" 2>/dev/null || true
 setsid "$WATCHER_PATH" >/dev/null 2>&1 &
 
 echo "------------------------------------------------"
-echo "部署完成！"
+echo "部署完成！系统自启组件与 2026.4 守护补丁已全部就绪。"
 echo "网关已在后台静默运行。正在进入初始化..."
 echo "------------------------------------------------"
 sleep 2
