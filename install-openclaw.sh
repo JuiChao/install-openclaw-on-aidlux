@@ -10,9 +10,10 @@ fi
 # 记录当前普通用户，供后续 AidLux 系统级自启引导使用
 CURRENT_USER=$(whoami)
 
-echo "[1/7] 补全系统级依赖 (Git & Node)..."
+echo "[1/7] 补全系统级依赖 (Git, Node, 及 C++ 原生编译工具链)..."
 sudo apt-get update -y
-sudo apt-get install -y git curl procps psmisc lsof
+# 终极修复：加入 build-essential python3 等，用于编译 sqlite 等底层二进制模块
+sudo apt-get install -y git curl procps psmisc lsof build-essential python3 make gcc g++
 if ! command -v npm &> /dev/null; then
     curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
     sudo apt-get install -y nodejs
@@ -73,7 +74,12 @@ echo "[4/7] 配置插件编译隔离环境..."
 mkdir -p "$WORK_DIR/cache/jiti"
 
 echo "[5/7] 正在安装与配置 OpenClaw 核心程序..."
-sudo npm install -g openclaw@latest
+# 清理由于之前崩溃可能留下的损坏缓存，并强制洗白权限
+sudo npm cache clean --force 2>/dev/null || true
+sudo chown -R $CURRENT_USER:$CURRENT_USER ~/.npm 2>/dev/null || true
+
+# 终极修复：使用 sudo -E 以继承我们在第 3 步设置的 NODE_OPTIONS，防止 NPM 安装时因为被剥夺内存限额而触发 OOM 强杀！
+sudo -E npm install -g openclaw@latest
 
 # 获取绝对路径，彻底消灭 AidLux 启动时的环境变量“黑洞”
 NODE_BIN=$(which node)
@@ -151,7 +157,7 @@ pkill -f "watcher.sh" 2>/dev/null || true
 setsid "$WATCHER_PATH" >/dev/null 2>&1 &
 
 echo "------------------------------------------------"
-echo "部署完成！全套兼容补丁及 AidLux 底层防死锁机制已就绪。"
+echo "部署完成！全套兼容补丁及 OOM 防杀机制已就绪。"
 echo "网关已在后台静默运行。正在进入初始化向导..."
 echo "------------------------------------------------"
 sleep 4
