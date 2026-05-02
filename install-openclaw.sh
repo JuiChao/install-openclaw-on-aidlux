@@ -7,7 +7,7 @@ if [ $(id -u) -eq 0 ]; then
   exit 1
 fi
 
-# 获取当前执行脚本的普通用户名
+# 记录当前普通用户，供后续自启引导使用
 CURRENT_USER=$(whoami)
 
 echo "[1/7] 补全系统级依赖 (Git & Node)..."
@@ -65,7 +65,7 @@ echo "export $JITI_ENV" >> ~/.bashrc
 export NODE_OPTIONS="$MEM_OPTS $PATCH_LOAD"
 export JITI_CACHE="$WORK_DIR/cache/jiti"
 
-# 提取 NPM 全局安装路径以防止自启时找不到环境变量
+# 提取 NPM 全局路径，防止自启时找不到环境变量
 NPM_BIN_PATH=$(npm config get prefix 2>/dev/null)/bin
 export PATH=$PATH:/usr/local/bin:/usr/bin:/opt/node/bin:$NPM_BIN_PATH
 
@@ -76,28 +76,34 @@ echo "[5/7] 正在安装 OpenClaw 核心程序..."
 sudo npm install -g openclaw@latest
 
 echo "[6/7] 构建本地监控守护脚本 (Watcher)..."
-# 生成守护脚本：包含了 start 指令、优雅终止以及 Ghost Lock 清理机制
 cat << EOF > "$WATCHER_PATH"
 #!/bin/bash
 export NODE_OPTIONS="$NODE_OPTIONS"
 export JITI_CACHE="$JITI_CACHE"
 export PATH=\$PATH:/usr/local/bin:/usr/bin:/opt/node/bin:$NPM_BIN_PATH
 
+# 修复核心 1：改为通过环境变量传递端口，绕过严格的 CLI 检查
+export PORT=18789
+export OPENCLAW_PORT=18789
+
 while true; do
     # 日志文件超过 5MB 自动截断清空
     [ \$(stat -c%s "$LOG_FILE" 2>/dev/null || echo 0) -gt 5242880 ] && > "$LOG_FILE"
     echo "\$(date): Starting Gateway..." >> "$LOG_FILE"
     
-    # 优雅清理端口：先尝试 kill -15 释放锁文件，再 fallback 到 kill -9
+    # 优雅清理端口：先尝试 kill -15 释放旧版锁文件，再 fallback 到 kill -9
     lsof -t -i tcp:18789 | xargs kill -15 2>/dev/null || true
     sleep 2
     lsof -t -i tcp:18789 | xargs kill -9 2>/dev/null || true
     
-    # 清理幽灵锁文件 (Ghost Lock) 防止新版拒载
+    # 清理由于非正常退出产生的 Ghost Lock 锁文件，防止新版拒绝启动
     find ~/.openclaw/agents/*/sessions/ -name "*.lock" -exec rm -f {} \; 2>/dev/null || true
 
-    # 补全严格的 gateway start 子命令
-    openclaw gateway start --port 18789 >> "$LOG_FILE" 2>&1 &
+    # 修复核心 2：增加缓冲时间，缓解 AidLux 设备的 event_loop_delay 崩溃
+    sleep 3
+
+    # 修复核心 3：移除废弃的 --port 参数，并加上严格的 start 子命令
+    openclaw gateway start >> "$LOG_FILE" 2>&1 &
     MAIN_PID=\$!
     wait \$MAIN_PID
     
@@ -109,7 +115,7 @@ EOF
 chmod +x "$WATCHER_PATH"
 
 # 配置 Aidlux 系统自启引导（自动降权）
-# 使用 tee 将自动降权指令准确写入系统目录，规避 EOF 引号导致的环境变量不展开问题
+# 修复核心 4：去除 EOF 单引号，使用 sudo tee 保证 $CURRENT_USER 变量能够正确被渲染成具体用户名
 cat << EOF | sudo tee /etc/aidlux/autostart_openclaw.sh > /dev/null
 #!/bin/bash
 sleep 20
@@ -127,7 +133,7 @@ pkill -f "openclaw gateway" 2>/dev/null || true
 setsid "$WATCHER_PATH" >/dev/null 2>&1 &
 
 echo "------------------------------------------------"
-echo "部署完成！系统自启组件与 2026.4 守护补丁已全部就绪。"
+echo "部署完成！已适配 OpenClaw 2026.4 机制与 AidLux 启动流。"
 echo "网关已在后台静默运行。正在进入初始化..."
 echo "------------------------------------------------"
 sleep 2
