@@ -70,20 +70,32 @@ echo "[5/7] 正在安装 OpenClaw 核心程序..."
 sudo npm install -g openclaw@latest
 
 echo "[6/7] 构建本地监控守护脚本 (Watcher)..."
+# 注意：补全了 start 命令，并处理了 2026.4.29+ 的锁文件清理与优雅终止
 cat << EOF > "$WATCHER_PATH"
 #!/bin/bash
 export NODE_OPTIONS="$NODE_OPTIONS"
 export JITI_CACHE="$JITI_CACHE"
-export PATH=\$PATH:/usr/local/bin:/usr/bin:/opt/node/bin
+# 强绑定 npm 路径，防止 AidLux 开机自启时找不到 openclaw 命令
+export PATH=\$PATH:/usr/local/bin:/usr/bin:/opt/node/bin:$(npm config get prefix 2>/dev/null)/bin
+
 while true; do
     # 日志文件超过 5MB 自动截断清空
     [ \$(stat -c%s "$LOG_FILE" 2>/dev/null || echo 0) -gt 5242880 ] && > "$LOG_FILE"
     echo "\$(date): Starting Gateway..." >> "$LOG_FILE"
-    # 清理端口残留并拉起网关
+    
+    # 修复 1：优雅清理端口。先尝试 kill -15 让旧版释放锁文件，再 fallback 到 kill -9
+    lsof -t -i tcp:18789 | xargs kill -15 2>/dev/null || true
+    sleep 2
     lsof -t -i tcp:18789 | xargs kill -9 2>/dev/null || true
-    openclaw gateway --port 18789 >> "$LOG_FILE" 2>&1 &
+    
+    # 修复 2：清理由于崩溃或暴力结束造成的 Ghost Lock，否则新版会拒绝启动
+    find ~/.openclaw/agents/*/sessions/ -name "*.lock" -exec rm -f {} \; 2>/dev/null || true
+
+    # 修复 3：补全严格的 gateway start 子命令
+    openclaw gateway start --port 18789 >> "$LOG_FILE" 2>&1 &
     MAIN_PID=\$!
     wait \$MAIN_PID
+    
     # 退出时清理子进程组
     pkill -P \$MAIN_PID 2>/dev/null || true
     sleep 10
